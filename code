@@ -1,0 +1,177 @@
+#define BLYNK_TEMPLATE_ID "TMPL3pYGzGIN3"
+#define BLYNK_TEMPLATE_NAME "Radition monotoring"
+#define BLYNK_AUTH_TOKEN "RFnBmzTVJpFU-4UuhiCJ4iayeDTXSw8J"
+
+#define BLYNK_PRINT Serial
+
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+#include <DHT.h>
+
+// WiFi
+char ssid[] = "Bharath";
+char pass[] = "04122005";
+
+// Pins (UNCHANGED)
+#define DHTPIN 4
+#define DHTTYPE DHT22
+#define SMOKE_PIN 34
+#define TRIG_PIN 5
+#define ECHO_PIN 18
+#define LED_PIN 2
+#define BUZZER_PIN 15
+
+DHT dht(DHTPIN, DHTTYPE);
+BlynkTimer timer;
+
+// Thresholds (UNCHANGED)
+float TEMP_WARNING = 20;
+float TEMP_CRITICAL = 23;
+
+int SMOKE_WARNING = 500;
+int SMOKE_CRITICAL = 600;
+
+int DIST_MIN = 10;
+
+// Control
+bool ledState = false;
+unsigned long lastAlertTime = 0;
+unsigned long alertInterval = 120000; // ✅ 2 minutes
+
+// =========================
+// Ultrasonic
+// =========================
+long getDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  if (duration == 0) return -1;
+
+  return duration * 0.034 / 2;
+}
+
+// =========================
+// MAIN FUNCTION
+// =========================
+void sendData() {
+
+  float temp = dht.readTemperature();
+  int smoke = analogRead(SMOKE_PIN);
+  long distance = getDistance();
+
+  bool tempValid = !isnan(temp);
+  bool smokeValid = (smoke > 200);
+  bool distValid = (distance > 0);
+
+  bool objectNear = (distValid && distance < DIST_MIN);
+
+  // Send to Blynk
+  Blynk.virtualWrite(V1, tempValid ? temp : 0);
+  Blynk.virtualWrite(V2, smokeValid ? smoke : 0);
+  Blynk.virtualWrite(V5, distValid ? distance : 0);
+
+  String status = "NORMAL";
+
+  // =========================
+  // CLASSIFICATION (UNCHANGED)
+  // =========================
+  if ((tempValid && temp >= TEMP_CRITICAL) ||
+      (smokeValid && smoke >= SMOKE_CRITICAL)) {
+    status = "CRITICAL";
+  }
+  else if ((tempValid && temp >= TEMP_WARNING) ||
+           (smokeValid && smoke >= SMOKE_WARNING)) {
+    status = "WARNING";
+  }
+
+  // =========================
+  // ACTIONS (MODIFIED AS REQUESTED)
+  // =========================
+
+  // 🟢 NORMAL
+  if (status == "NORMAL") {
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
+
+    // reset timer so next critical sends immediately
+    lastAlertTime = 0;
+  }
+
+  // 🟡 WARNING → ONLY LED BLINK
+  else if (status == "WARNING") {
+    ledState = !ledState;
+    digitalWrite(LED_PIN, ledState);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+
+  // 🔴 CRITICAL
+  else if (status == "CRITICAL") {
+
+    digitalWrite(LED_PIN, HIGH);
+    digitalWrite(BUZZER_PIN, HIGH);
+
+    // send alert every 2 minutes ONLY
+    if (millis() - lastAlertTime >= alertInterval) {
+
+      // send only critical alerts
+      if (tempValid && temp >= TEMP_CRITICAL) {
+        Blynk.logEvent("temp_high", "🔥 Temperature VERY HIGH!");
+      }
+
+      if (smokeValid && smoke >= SMOKE_CRITICAL) {
+        Blynk.logEvent("smoke_high", "💨 Smoke VERY HIGH!");
+      }
+
+      // distance alert ONLY during critical
+      if (objectNear) {
+        Blynk.logEvent("danger_near", "🚨 CRITICAL! DO NOT COME NEAR!");
+      }
+
+      lastAlertTime = millis();
+    }
+  }
+
+  // Debug
+  Serial.print("Temp: ");
+  Serial.print(temp);
+  Serial.print(" | Smoke: ");
+  Serial.print(smoke);
+  Serial.print(" | Distance: ");
+  Serial.print(distance);
+  Serial.print(" | Status: ");
+  Serial.println(status);
+}
+
+// =========================
+// SETUP
+// =========================
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  dht.begin();
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  timer.setInterval(2000L, sendData);
+}
+
+// =========================
+// LOOP
+// =========================
+void loop() {
+  Blynk.run();
+  timer.run();
+}
